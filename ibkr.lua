@@ -8,7 +8,7 @@
 -- Source of truth / backup: karero/moneymoney-ibkr branch `local-live`.
 
 WebBanking {
-  version = 0.42,
+  version = 0.43,
   country = "de",
   description = "Include your IBKR stock portfolio in MoneyMoney (local USD build).",
   services = {"IBKR"}
@@ -118,7 +118,10 @@ function ListAccounts(knownAccounts)
   -- One cash account per currency held (USD/EUR/CAD/...), discovered from the
   -- Flex Cash Report. USD keeps accountNumber "2" to preserve the existing
   -- account's history; other currencies use the currency code as accountNumber.
-  local content = loadStatement()
+  local content, err = loadStatement()
+  if err ~= nil then
+      print("IBKR ListAccounts: " .. err .. " — falling back to a single USD cash account.")
+  end
   local cashReport = content and parseBlock(content, 'CashReport')
   local found = false
   if cashReport then
