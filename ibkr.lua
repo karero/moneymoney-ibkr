@@ -1,9 +1,20 @@
+-- LOCAL BUILD — personalized, NOT the upstream extension. Do not submit as-is.
+-- Differences vs krambox/moneymoney-ibkr: base currency USD (not EUR); futures (FUT)
+-- report contracts + contribute only fifoPnlUnrealized to NAV; short-position PnL% sign fix.
+-- Adopted from upstream v0.5: AccountManagement/FlexWebService endpoint, URL-encoded params,
+-- safer block parsing, Flex-statement validation. Fail-fast on Flex errors (no retry, by choice).
+-- Source of truth / backup: karero/moneymoney-ibkr branch `local-live`.
+
 WebBanking {
-  version = 0.4,
+  version = 0.41,
   country = "de",
-  description = "Include your IBKR stock portfolio in MoneyMoney.",
+  description = "Include your IBKR stock portfolio in MoneyMoney (local USD build).",
   services = {"IBKR"}
 }
+
+local FLEX_BASE_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+local FLEX_VERSION = "3"
+local FLEX_USER_AGENT = "Java/1.8"
 
 local parseargs = function(s)
   local arg = {}
@@ -19,10 +30,28 @@ local parseargs = function(s)
 end
 
 local parseBlock = function(content, k)
-  return string.match(content, "^.+<" .. k .. ">(.+)</" .. k .. ">.+$")
+  if content == nil then return nil end
+  return string.match(content, "<" .. k .. "[^>]*>(.-)</" .. k .. ">")
 end
 
-local connection = Connection()
+local function isFlexStatement(content)
+  if content == nil or content == "" then return false end
+  return string.find(content, "<FlexQueryResponse", 1, true) ~= nil or
+      string.find(content, "<FlexStatement ", 1, true) ~= nil or
+      string.find(content, "<FlexStatements", 1, true) ~= nil
+end
+
+local function encodeParam(value)
+  return MM.urlencode(tostring(value), "UTF-8")
+end
+
+local function newConnection()
+  local c = Connection()
+  c.useragent = FLEX_USER_AGENT
+  return c
+end
+
+local connection = newConnection()
 local token
 local query
 local code
@@ -35,16 +64,16 @@ end
 function InitializeSession(protocol, bankCode, username, customer, password)
   token = password
   query = username
-  connection = Connection()
+  connection = newConnection()
 
   local content = connection:get(
-      "https://ndcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t=" .. token ..
-          "&q=" .. query .. "&v=3")
-  local status = string.match(content, "^.+<Status>(.+)</Status>.+$")
+      FLEX_BASE_URL .. "/SendRequest?t=" .. encodeParam(token) ..
+          "&q=" .. encodeParam(query) .. "&v=" .. FLEX_VERSION)
+  local status = parseBlock(content, "Status")
   if status == "Success" then
-      code = string.match(content, "^.+<ReferenceCode>(.+)</ReferenceCode>.+$")
+      code = parseBlock(content, "ReferenceCode")
       statementUrl = string.match(content, "<Url>%s*(.-)%s*</Url>")
-      print("8:" .. code)
+      print("8:" .. tostring(code))
       return
   end
   local ec = parseBlock(content, 'ErrorCode')
@@ -88,14 +117,16 @@ function RefreshAccount(account, since)
   print("RefreshAccount " .. JSON():set(account):json())
 
   if statementContent == nil then
-      local getUrl = statementUrl or
-          "https://gdcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
+      local getUrl = statementUrl or (FLEX_BASE_URL .. "/GetStatement")
       statementContent, charset, mimeType = connection:get(
-          getUrl .. "?t=" .. token .. "&q=" .. code .. "&v=3")
+          getUrl .. "?t=" .. encodeParam(token) .. "&q=" .. encodeParam(code) .. "&v=" .. FLEX_VERSION)
       local ec = parseBlock(statementContent, 'ErrorCode')
       if ec ~= nil then
           local em = parseBlock(statementContent, 'ErrorMessage') or ""
           return "IBKR Flex GetStatement error " .. ec .. ": " .. em
+      end
+      if not isFlexStatement(statementContent) then
+          return "IBKR Flex GetStatement failed: response did not contain a Flex statement."
       end
   end
   if account.accountNumber == "1" then
