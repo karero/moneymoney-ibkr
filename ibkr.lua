@@ -1,6 +1,6 @@
 -- LOCAL BUILD — personalized, NOT the upstream extension. Do not submit as-is.
 -- Differences vs krambox/moneymoney-ibkr: base currency USD (not EUR); futures (FUT)
--- report contracts + contribute only fifoPnlUnrealized to NAV; short-position PnL% sign fix;
+-- report contracts + contribute 0 to NAV (P&L already settled to cash); short-position PnL% sign fix;
 -- one cash account PER CURRENCY (USD/EUR/CAD/...) from the Flex Cash Report.
 -- Adopted from upstream v0.5: AccountManagement/FlexWebService endpoint, URL-encoded params,
 -- safer block parsing, Flex-statement validation. Fail-fast on Flex errors (no retry, by choice).
@@ -8,7 +8,7 @@
 -- Source of truth / backup: karero/moneymoney-ibkr branch `local-live`.
 
 WebBanking {
-  version = 0.43,
+  version = 0.44,
   country = "de",
   description = "Include your IBKR stock portfolio in MoneyMoney (local USD build).",
   services = {"IBKR"}
@@ -188,9 +188,10 @@ function RefreshAccount(account, since)
               purchasePrice = pos.costBasisPrice,
               currencyOfPurchasePrice = pos.currency,
               exchangeRate = 1 / pos.fxRateToBase,
-              -- Futures contribute only their unrealized PnL to NAV (daily MTM settles to cash),
-              -- not their notional positionValue. Without this, futures distort the balance hugely.
-              amount = (pos.assetCategory == "FUT" and pos.fifoPnlUnrealized or pos.positionValue) * pos.fxRateToBase,
+              -- Futures contribute 0 to NAV: daily MTM already settles their P&L into the cash
+              -- balance, so counting notional positionValue OR fifoPnlUnrealized here would
+              -- double-count. Confirmed against IB Net Liq (160,270 ~ non-fut MV + cash).
+              amount = (pos.assetCategory == "FUT" and 0 or pos.positionValue) * pos.fxRateToBase,
               -- PnL %: fifoPnlUnrealized / |costBasisMoney| gives correct sign for both longs and shorts.
               userdata = {{key="_profit",value=string.format("%.02f", pos.fifoPnlUnrealized*pos.fxRateToBase) .. " USD / " .. string.format("%.05f", 100 * pos.fifoPnlUnrealized / math.abs(pos.costBasisMoney)) .. " %"}}
               --userdata = {{key="_profit",value=string.format("%.02f", pos.fifoPnlUnrealized) .. " USD / " .. string.format("%.05f", 100/pos.costBasisMoney*pos.positionValue-100) .. " %"}}

@@ -82,7 +82,7 @@ for _, s in ipairs(sec.securities or {}) do
   if s.name == "MES 18JUN26" then mes = s end
 end
 check("MES futures quantity is contracts (-3), not -15", mes and tostring(mes.quantity) == "-3")
-check("MES futures amount is fifoPnlUnrealized (-11416.86), not notional", mes and approx(tonumber(mes.amount), -11416.86))
+check("MES futures amount is 0 (P&L lives in cash, not double-counted)", mes and approx(tonumber(mes.amount), 0))
 
 -- ---- report -----------------------------------------------------------------
 realprint("")
