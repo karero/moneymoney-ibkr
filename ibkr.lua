@@ -1,12 +1,14 @@
 -- LOCAL BUILD — personalized, NOT the upstream extension. Do not submit as-is.
 -- Differences vs krambox/moneymoney-ibkr: base currency USD (not EUR); futures (FUT)
--- report contracts + contribute only fifoPnlUnrealized to NAV; short-position PnL% sign fix.
+-- report contracts + contribute only fifoPnlUnrealized to NAV; short-position PnL% sign fix;
+-- one cash account PER CURRENCY (USD/EUR/CAD/...) from the Flex Cash Report.
 -- Adopted from upstream v0.5: AccountManagement/FlexWebService endpoint, URL-encoded params,
 -- safer block parsing, Flex-statement validation. Fail-fast on Flex errors (no retry, by choice).
+-- Requires the Flex Query to include the Cash Report section with Currency Breakout.
 -- Source of truth / backup: karero/moneymoney-ibkr branch `local-live`.
 
 WebBanking {
-  version = 0.41,
+  version = 0.42,
   country = "de",
   description = "Include your IBKR stock portfolio in MoneyMoney (local USD build).",
   services = {"IBKR"}
@@ -56,6 +58,26 @@ local token
 local query
 local code
 local statementUrl
+local statementContent
+
+-- Fetch + cache + validate the Flex statement (fail-fast, no retry).
+local function loadStatement()
+  if statementContent == nil then
+      local getUrl = statementUrl or (FLEX_BASE_URL .. "/GetStatement")
+      local content = connection:get(
+          getUrl .. "?t=" .. encodeParam(token) .. "&q=" .. encodeParam(code) .. "&v=" .. FLEX_VERSION)
+      local ec = parseBlock(content, 'ErrorCode')
+      if ec ~= nil then
+          local em = parseBlock(content, 'ErrorMessage') or ""
+          return nil, "IBKR Flex GetStatement error " .. ec .. ": " .. em
+      end
+      if not isFlexStatement(content) then
+          return nil, "IBKR Flex GetStatement failed: response did not contain a Flex statement."
+      end
+      statementContent = content
+  end
+  return statementContent
+end
 
 function SupportsBank(protocol, bankCode)
   return protocol == ProtocolWebBanking and bankCode == "IBKR"
@@ -85,24 +107,46 @@ function InitializeSession(protocol, bankCode, username, customer, password)
 end
 
 function ListAccounts(knownAccounts)
-  local account = {
+  local accounts = {{
       name = "IBKR",
-      accountNumber = 1,
+      accountNumber = "1",
       currency = "USD",
       portfolio = true,
       type = "AccountTypePortfolio"
-  }
-  local account2 = {
-      name = "IBKR Cash",
-      accountNumber = 2,
-      currency = "USD",
-      type = "AccountTypeOther"
-  }
+  }}
 
-  return {account, account2}
+  -- One cash account per currency held (USD/EUR/CAD/...), discovered from the
+  -- Flex Cash Report. USD keeps accountNumber "2" to preserve the existing
+  -- account's history; other currencies use the currency code as accountNumber.
+  local content = loadStatement()
+  local cashReport = content and parseBlock(content, 'CashReport')
+  local found = false
+  if cashReport then
+      for row in cashReport:gmatch("<CashReportCurrency(.-)/>") do
+          local c = parseargs(row)
+          if c.levelOfDetail == "Currency" and c.currency and c.currency ~= "BASE_SUMMARY" then
+              accounts[#accounts + 1] = {
+                  name = "IBKR Cash " .. c.currency,
+                  accountNumber = (c.currency == "USD") and "2" or c.currency,
+                  currency = c.currency,
+                  type = "AccountTypeOther"
+              }
+              found = true
+          end
+      end
+  end
+  if not found then
+      -- Fallback: single base-currency cash account (e.g. Cash Report not enabled).
+      accounts[#accounts + 1] = {
+          name = "IBKR Cash",
+          accountNumber = "2",
+          currency = "USD",
+          type = "AccountTypeOther"
+      }
+  end
+
+  return accounts
 end
-
-local statementContent
 
 function stringToTimestamp(str)
   local datePattern = '(%d%d%d%d)(%d%d)(%d%d)'
@@ -116,20 +160,12 @@ end
 function RefreshAccount(account, since)
   print("RefreshAccount " .. JSON():set(account):json())
 
-  if statementContent == nil then
-      local getUrl = statementUrl or (FLEX_BASE_URL .. "/GetStatement")
-      statementContent, charset, mimeType = connection:get(
-          getUrl .. "?t=" .. encodeParam(token) .. "&q=" .. encodeParam(code) .. "&v=" .. FLEX_VERSION)
-      local ec = parseBlock(statementContent, 'ErrorCode')
-      if ec ~= nil then
-          local em = parseBlock(statementContent, 'ErrorMessage') or ""
-          return "IBKR Flex GetStatement error " .. ec .. ": " .. em
-      end
-      if not isFlexStatement(statementContent) then
-          return "IBKR Flex GetStatement failed: response did not contain a Flex statement."
-      end
+  local statementContent, err = loadStatement()
+  if err ~= nil then
+      return err
   end
-  if account.accountNumber == "1" then
+
+  if tostring(account.accountNumber) == "1" then
       local positions = parseBlock(statementContent, 'OpenPositions')
       local securities = {}
       for p in positions:gmatch("<OpenPosition(.-)/>") do
@@ -163,40 +199,41 @@ function RefreshAccount(account, since)
       return {
           securities = securities
       }
-  elseif account.accountNumber == "2" then
-      local summary = parseBlock(statementContent, 'EquitySummaryInBase')
-      local cash = 0
-      for p in summary:gmatch("<EquitySummaryByReportDateInBase(.-)/>") do
-          print(p)
-          local pos = parseargs(p)
-          cash = pos.cash
+  else
+      -- Per-currency cash account: balance + transactions for THIS account's currency.
+      local acctCurrency = account.currency
+      local balance = 0
+      local cashReport = parseBlock(statementContent, 'CashReport')
+      if cashReport then
+          for row in cashReport:gmatch("<CashReportCurrency(.-)/>") do
+              local c = parseargs(row)
+              if c.levelOfDetail == "Currency" and c.currency == acctCurrency then
+                  balance = tonumber(c.endingCash) or 0
+              end
+          end
       end
-      --  array of transactions.
-      local summary = parseBlock(statementContent, 'StmtFunds')
+
+      local funds = parseBlock(statementContent, 'StmtFunds')
       local transactions = {}
-      if summary then
-          for p in summary:gmatch("<StatementOfFundsLine(.-)/>") do
-              --print(p)
+      if funds then
+          for p in funds:gmatch("<StatementOfFundsLine(.-)/>") do
               local sm = parseargs(p)
-              print(#transactions,sm.transactionID,sm.reportDate,sm.settleDate,sm.description,sm.activityDescription,sm.amount,sm.activityCode)
-              if sm.activityCode  ~=  'ADJ' then
+              if sm.activityCode ~= 'ADJ' and sm.currency == acctCurrency then
                   transactions[#transactions + 1] = {
-                      name=sm.description,
-                      amount=sm.amount,
-                      currency="USD",
-                      bookingDate=stringToTimestamp(sm.reportDate),
-                      valueDate=stringToTimestamp(sm.settleDate),
-                      transactionCode=sm.transactionID,
-                      purpose=sm.activityDescription,
-                      bookingText=sm.activityCode
+                      name = sm.description,
+                      amount = tonumber(sm.amount) or 0,
+                      currency = acctCurrency,
+                      bookingDate = stringToTimestamp(sm.reportDate),
+                      valueDate = stringToTimestamp(sm.settleDate),
+                      transactionCode = sm.transactionID,
+                      purpose = sm.activityDescription,
+                      bookingText = sm.activityCode
                   }
               end
           end
       end
-      -- Return balance and array of transactions.
-      --print(JSON():set(transactions):json())
       return {
-          balance = cash,
+          balance = balance,
           transactions = transactions
       }
   end
