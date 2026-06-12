@@ -16,8 +16,10 @@ local stmtXml = slurp(here .. "fixtures/statement.xml")
 
 -- MoneyMoney runtime stubs
 function WebBanking(t) end
+local requestedUrls = {}
 function Connection()
   return { get = function(self, url)
+    table.insert(requestedUrls, url)
     if string.find(url, "SendRequest", 1, true) then return sendXml end
     return stmtXml
   end }
@@ -83,6 +85,17 @@ for _, s in ipairs(sec.securities or {}) do
 end
 check("MES futures quantity is contracts (-3), not -15", mes and tostring(mes.quantity) == "-3")
 check("MES futures amount is 0 (P&L lives in cash, not double-counted)", mes and approx(tonumber(mes.amount), 0))
+
+-- The send.xml fixture advertises gdcdyn.interactivebrokers.com in <Url>.
+-- The extension must ignore it and fetch from the ndcdyn FLEX base: both are
+-- the same Akamai edge, and stale client DNS caches have failed to resolve
+-- gdcdyn while ndcdyn (just used by SendRequest) resolved fine.
+local stmtUrl
+for _, u in ipairs(requestedUrls) do
+  if u:find("GetStatement", 1, true) then stmtUrl = u; break end
+end
+check("GetStatement uses ndcdyn FLEX base, ignoring gdcdyn <Url> from SendRequest",
+  stmtUrl ~= nil and stmtUrl:find("https://ndcdyn.interactivebrokers.com/", 1, true) == 1)
 
 -- ---- report -----------------------------------------------------------------
 realprint("")

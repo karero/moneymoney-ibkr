@@ -57,15 +57,17 @@ local connection = newConnection()
 local token
 local query
 local code
-local statementUrl
 local statementContent
 
 -- Fetch + cache + validate the Flex statement (fail-fast, no retry).
 local function loadStatement()
   if statementContent == nil then
-      local getUrl = statementUrl or (FLEX_BASE_URL .. "/GetStatement")
+      -- Deliberately ignore the <Url> host from the SendRequest response
+      -- (gdcdyn.interactivebrokers.com): it is an alias for the same Akamai
+      -- edge as FLEX_BASE_URL, and the extra hostname can fail on stale
+      -- client DNS caches while ndcdyn was just resolved by SendRequest.
       local content = connection:get(
-          getUrl .. "?t=" .. encodeParam(token) .. "&q=" .. encodeParam(code) .. "&v=" .. FLEX_VERSION)
+          FLEX_BASE_URL .. "/GetStatement?t=" .. encodeParam(token) .. "&q=" .. encodeParam(code) .. "&v=" .. FLEX_VERSION)
       local ec = parseBlock(content, 'ErrorCode')
       if ec ~= nil then
           local em = parseBlock(content, 'ErrorMessage') or ""
@@ -94,7 +96,6 @@ function InitializeSession(protocol, bankCode, username, customer, password)
   local status = parseBlock(content, "Status")
   if status == "Success" then
       code = parseBlock(content, "ReferenceCode")
-      statementUrl = string.match(content, "<Url>%s*(.-)%s*</Url>")
       print("8:" .. tostring(code))
       return
   end
