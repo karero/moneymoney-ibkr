@@ -35,3 +35,11 @@ sign fix + fail-fast (no retry). The USD parts must NEVER go into a `fix/*` PR.
 Some clones have `push.default = upstream`, which silently retargets a plain
 `git push origin <branch>` onto the fork's default branch. Always push with an
 explicit refspec: `git push <remote> <branch>:refs/heads/<branch>`.
+
+## Note: GetStatement hostname (2026-06-13, f91c869)
+GetStatement must always use FLEX_BASE_URL (ndcdyn) — do NOT follow the
+gdcdyn `<Url>` from the SendRequest response. Both are CNAMEs to the same
+Akamai edge, but a stale client DNS cache made gdcdyn unresolvable while
+ndcdyn worked ("Could not resolve DNS name gdcdyn..."). Upstream `main`
+already does this; following `<Url>` was a local-live divergence (so there
+is nothing to upstream). Regression test pins it in test/ibkr_test.lua.
